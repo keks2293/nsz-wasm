@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>nsz in Pyodide – Extended Analysis</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        textarea { width: 100%; height: 400px; font-family: monospace; }
+        button { margin: 0.5em 0; }
+        #status { color: #555; }
+        .keys-section { margin-top: 1em; padding: 1em; border: 1px solid #ccc; border-radius: 4px; }
+        .keys-section button { margin-right: 1em; }
+        .button-group button { margin-right: 1em; }
+    </style>
+</head>
+<body>
+    <h1>nsz – Nintendo Switch compression tool (extended analysis)</h1>
+    <p>Load <code>nsz</code>, then analyze an NSZ/NSP file to see all available metadata. Keys are downloaded automatically.</p>
+
+    <div>
+        <button id="loadBtn">Load nsz</button>
+        <span id="status">Not loaded</span>
+    </div>
+
+    <div id="keysControls" style="display:none;" class="keys-section">
+        <h3>Keys Management</h3>
+        <p>Keys are downloaded automatically on load. You can manually update them below:</p>
+        <button id="fetchKeysBtn">📥 Fetch prod.keys from repo</button>
+        <button id="uploadKeysBtn">📁 Upload keys.txt</button>
+        <input type="file" id="keysFileInput" accept=".keys,.txt" style="display:none;">
+        <span id="keysStatus"></span>
+    </div>
+
+    <hr>
+
+    <div>
+        <label for="fileInput">Choose an NSP/NSZ file:</label>
+        <input type="file" id="fileInput" disabled>
+        <div class="button-group">
+            <button id="analyzeBtn" disabled>Extended Analyze</button>
+            <button id="convertBtn" disabled>Convert NSZ to NSP</button>
+        </div>
+    </div>
+
+    <h3>Output:</h3>
+    <textarea id="output" readonly placeholder="Results will appear here..."></textarea>
+
+    <!-- Pyodide v0.29.3 -->
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+    <script>
+        let pyodide = null;
+        let nszReady = false;
+
+        const outputEl = document.getElementById('output');
+        const statusEl = document.getElementById('status');
+        const loadBtn = document.getElementById('loadBtn');
+        const keysControls = document.getElementById('keysControls');
+        const fetchKeysBtn = document.getElementById('fetchKeysBtn');
+        const uploadKeysBtn = document.getElementById('uploadKeysBtn');
+        const keysFileInput = document.getElementById('keysFileInput');
+        const keysStatus = document.getElementById('keysStatus');
+        const fileInput = document.getElementById('fileInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const convertBtn = document.getElementById('convertBtn');
+
+        function printOutput(text) {
+            outputEl.value += text + '\n';
+        }
+
+        async function writeKeys(keysContent) {
+            await pyodide.runPythonAsync(`
+import os
+keys_content = '''${keysContent.replace(/'/g, "\\'")}'''
+os.makedirs('/home/pyodide/.switch', exist_ok=True)
+with open('/home/pyodide/.switch/prod.keys', 'w') as f:
+    f.write(keys_content)
+with open('keys.txt', 'w') as f:
+    f.write(keys_content)
+print("Keys written to filesystem")
+            `);
+            keysStatus.textContent = '✅ Real keys loaded';
+            printOutput('Real keys installed.');
+        }
+
+        async function fetchProdKeys() {
+            const url = 'https://raw.githubusercontent.com/yeoyck/switch-prodkeys/main/v16.0.0/prod.keys';
+            printOutput('Fetching keys...');
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const keysText = await response.text();
+                await writeKeys(keysText);
+                return true;
+            } catch (e) {
+                printOutput(`Failed to fetch keys: ${e.message}`);
+                keysStatus.textContent = '❌ No keys available';
+                return false;
+            }
+        }
+
+        async function uploadKeys(file) {
+            const text = await file.text();
+            await writeKeys(text);
+        }
+
+        async function loadNSZ() {
+            printOutput('Loading Pyodide...');
+            statusEl.textContent = 'Loading Pyodide...';
+            pyodide = await loadPyodide();
+            printOutput('Pyodide ready.');
+
+            printOutput('Installing nsz and dependencies...');
+            statusEl.textContent = 'Installing packages...';
+            try {
+                await pyodide.loadPackage(['micropip', 'pycryptodome', 'lz4']);
+                const micropip = pyodide.pyimport('micropip');
+                await micropip.install('nsz');
+                printOutput('nsz installed.');
+
+                // Enhanced enlighten mock
+                await pyodide.runPythonAsync(`
+import sys
+from types import ModuleType
+
+class DummyCounter:
+    def __init__(self, *args, **kwargs):
+        self.count = 0
+        self.total = kwargs.get('total', 100)
+        self.desc = kwargs.get('desc', '')
+    def update(self, n=1):
+        self.count += n
+    def refresh(self):
+        pass
+    def close(self, clear=False):
+        pass
+    def add_subcounter(self, color):
+        return DummyCounter()
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.close()
+
+class DummyManager:
+    def __init__(self, *args, **kwargs):
+        pass
+    def stop(self):
+        pass
+    def counter(self, *args, **kwargs):
+        return DummyCounter(*args, **kwargs)
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.stop()
+
+mock = ModuleType('enlighten')
+mock.Counter = DummyCounter
+mock.StatusBar = DummyCounter
+mock.SubCounter = DummyCounter
+mock.Manager = DummyManager
+mock.get_manager = lambda *a, **kw: DummyManager()
+sys.modules['enlighten'] = mock
+                `);
+
+                const keysOk = await fetchProdKeys();
+                if (!keysOk) {
+                    throw new Error('Keys fetch failed - cannot proceed without keys');
+                }
+
+                await pyodide.runPythonAsync('import nsz');
+                printOutput('nsz ready.');
+                nszReady = true;
+                statusEl.textContent = 'nsz ready';
+                fileInput.disabled = false;
+                analyzeBtn.disabled = false;
+                convertBtn.disabled = false;
+                keysControls.style.display = 'block';
+            } catch (e) {
+                printOutput('Error: ' + e.message);
+                statusEl.textContent = 'Installation failed';
+                loadBtn.disabled = false;
+                loadBtn.textContent = 'Load nsz';
+                console.error(e);
+            }
+        }
+
+        async function analyzeFile(file) {
+            if (!nszReady) {
+                printOutput('Please load nsz first.');
+                return;
+            }
+
+            printOutput(`Extended analysis: ${file.name}`);
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const filename = '/tmp/' + file.name;
+            pyodide.FS.writeFile(filename, bytes);
+            pyodide.globals.set('filename', filename);
+
+            try {
+                const result = await pyodide.runPythonAsync(`
+import nsz
+from nsz import factory
+from nsz.PathTools import isNspNsz, isXciXcz, isCompressedGameFile
+from pathlib import Path
+import inspect
+
+def get_attr(obj, attr, default='N/A'):
+    return getattr(obj, attr, default)
+
+def format_bytes(size):
+    if size is None or size == 'N/A':
+        return 'N/A'
+    if not isinstance(size, (int, float)):
+        return str(size)
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
+
+def safe_str(value):
+    if value is None:
+        return 'None'
+    try:
+        return str(value)
+    except:
+        return '<unprintable>'
+
+def truncate_key(key):
+    if key is None or key == 'N/A':
+        return 'N/A'
+    try:
+        if isinstance(key, (bytes, bytearray)):
+            key_str = key.hex()[:16] + '...'
+        else:
+            key_str = str(key)[:16] + '...'
+        return key_str
+    except:
+        return '<key>'
+
+try:
+    file_path = Path(filename)
+    container = factory(file_path)
+    container.open(str(file_path), 'rb')
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append("CONTAINER INFORMATION")
+    lines.append("=" * 60)
+
+    # Basic type info
+    lines.append(f"File: {file_path.name}")
+    lines.append(f"Type: {type(container).__name__}")
+    lines.append(f"NSP/NSZ: {isNspNsz(file_path)}")
+    lines.append(f"XCI/XCZ: {isXciXcz(file_path)}")
+    lines.append(f"Compressed Game: {isCompressedGameFile(file_path)}")
+
+    # Title information
+    title_id = get_attr(container, 'titleId')
+    version = get_attr(container, 'version')
+    title_name = get_attr(container, 'titleName')
+    lines.append(f"Title ID: {title_id}")
+    lines.append(f"Version: {version}")
+    lines.append(f"Title Name: {title_name}")
+
+    # Crypto information
+    crypto_type = get_attr(container, 'cryptoType')
+    crypto_key = get_attr(container, 'cryptoKey')
+    crypto_counter = get_attr(container, 'cryptoCounter')
+    master_key_rev = get_attr(container, 'masterKeyRev')
+    lines.append(f"Crypto Type: {crypto_type}")
+    if crypto_key and crypto_key != 'N/A':
+        lines.append(f"Crypto Key: {truncate_key(crypto_key)}")
+    lines.append(f"Master Key Rev: {master_key_rev}")
+
+    # Ticket information
+    has_ticket = get_attr(container, 'hasValidTicket')
+    ticketless = getattr(container, 'ticketless', False)
+    ticket = get_attr(container, 'ticket')
+    lines.append(f"Has Valid Ticket: {has_ticket}")
+    lines.append(f"Ticketless: {ticketless}")
+    if ticket != 'N/A' and ticket is not None:
+        lines.append(f"Ticket: Present")
+        if hasattr(ticket, 'titleId'):
+            lines.append(f"  Ticket Title ID: {get_attr(ticket, 'titleId')}")
+        if hasattr(ticket, 'keyGeneration'):
+            lines.append(f"  Key Generation: {get_attr(ticket, 'keyGeneration')}")
+
+    # File counts
+    files = get_attr(container, 'files', [])
+    lines.append(f"Total Files: {len(files)}")
+
+    # NCA specific info if applicable
+    if 'Nca' in type(container).__name__:
+        lines.append(f"NCA Type: {get_attr(container, 'ncaType')}")
+        lines.append(f"Content Type: {get_attr(container, 'contentType')}")
+        lines.append(f"Distribution Type: {get_attr(container, 'distributionType')}")
+        lines.append(f"Is Update: {get_attr(container, 'isUpdate')}")
+
+    lines.append("\\n" + "=" * 60)
+    lines.append("FILE LIST (First 20 files)")
+    lines.append("=" * 60)
+
+    for i, f in enumerate(files[:20]):
+        f_name = get_attr(f, 'name', '?')
+        f_size = get_attr(f, 'size', 0)
+        f_path = get_attr(f, '_path', '')
+        f_offset = get_attr(f, 'offset', 0)
+        f_crypto = get_attr(f, 'cryptoType', 'none')
+
+        lines.append(f"{i+1:2d}. {f_name}")
+        lines.append(f"    Size: {format_bytes(f_size)}")
+        if f_path and f_path != f_name:
+            lines.append(f"    Path: {f_path}")
+        if f_offset:
+            lines.append(f"    Offset: 0x{f_offset:x}")
+        if f_crypto != 'none' and f_crypto != 'N/A':
+            lines.append(f"    Crypto: {f_crypto}")
+
+    if len(files) > 20:
+        lines.append(f"... and {len(files)-20} more files")
+
+    # Partition information for HFS0/XCI
+    if hasattr(container, 'hfs0'):
+        hfs0_list = get_attr(container, 'hfs0', [])
+        if hfs0_list:
+            lines.append("\\n" + "=" * 60)
+            lines.append("HFS0 PARTITIONS")
+            lines.append("=" * 60)
+            for partition in hfs0_list[:5]:
+                p_name = get_attr(partition, 'name', '?')
+                p_files = get_attr(partition, 'files', [])
+                lines.append(f"Partition: {p_name} ({len(p_files)} files)")
+            if len(hfs0_list) > 5:
+                lines.append(f"... and {len(hfs0_list)-5} more partitions")
+
+    # Try to use printInfo if available
+    if hasattr(container, 'printInfo') and callable(container.printInfo):
+        import io
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            container.printInfo()
+            print_output = sys.stdout.getvalue()
+            lines.append("\\n" + "=" * 60)
+            lines.append("printInfo() OUTPUT")
+            lines.append("=" * 60)
+            lines.extend(print_output.splitlines())
+        finally:
+            sys.stdout = old_stdout
+
+    container.close()
+    result = "\\n".join(lines)
+
+except Exception as e:
+    import traceback
+    result = f"Error during analysis:\\n{traceback.format_exc()}"
+
+result
+                `);
+                printOutput(result);
+            } catch (e) {
+                printOutput('Python error: ' + e.message);
+            }
+        }
+
+        async function convertToNSP(file) {
+            if (!nszReady) {
+                printOutput('Please load nsz first.');
+                return;
+            }
+
+            if (!file.name.toLowerCase().endsWith('.nsz')) {
+                printOutput('Selected file is not an NSZ. Conversion skipped.');
+                return;
+            }
+
+            printOutput(`Converting: ${file.name} to NSP...`);
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const filename = '/tmp/' + file.name;
+            pyodide.FS.writeFile(filename, bytes);
+
+            try {
+                pyodide.FS.mkdir('/tmp/output');
+            } catch (e) {}
+            const outputDir = '/tmp/output/';
+
+            pyodide.globals.set('input_path_str', filename);
+            pyodide.globals.set('output_dir_str', outputDir);
+
+            try {
+                await pyodide.runPythonAsync(`
+import nsz
+from pathlib import Path
+
+input_path = Path(input_path_str)
+output_dir = Path(output_dir_str)
+
+nsz.decompress(
+    input_path,
+    output_dir,
+    fixPadding=False,
+    statusReportInfo=None
+)
+print("Decompression complete")
+                `);
+
+                const outputFilename = '/tmp/output/' + file.name.replace(/\.nsz$/i, '.nsp');
+                try {
+                    pyodide.FS.stat(outputFilename);
+                } catch (e) {
+                    throw new Error('Output file not found: ' + outputFilename);
+                }
+
+                printOutput('Conversion successful! Preparing download...');
+                const fileData = pyodide.FS.readFile(outputFilename);
+                const blob = new Blob([fileData], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name.replace(/\.nsz$/i, '.nsp');
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                printOutput('Download started.');
+            } catch (e) {
+                printOutput('Conversion error: ' + e.message);
+                console.error(e);
+            }
+        }
+
+        loadBtn.addEventListener('click', async () => {
+            loadBtn.disabled = true;
+            loadBtn.textContent = 'Loading...';
+            await loadNSZ();
+        });
+
+        fetchKeysBtn.addEventListener('click', fetchProdKeys);
+        uploadKeysBtn.addEventListener('click', () => keysFileInput.click());
+        keysFileInput.addEventListener('change', e => {
+            if (e.target.files.length) uploadKeys(e.target.files[0]);
+        });
+
+        analyzeBtn.addEventListener('click', () => {
+            if (fileInput.files.length === 0) {
+                printOutput('Please select a file.');
+                return;
+            }
+            analyzeFile(fileInput.files[0]);
+        });
+
+        convertBtn.addEventListener('click', () => {
+            if (fileInput.files.length === 0) {
+                printOutput('Please select a file.');
+                return;
+            }
+            convertToNSP(fileInput.files[0]);
+        });
+    </script>
+</body>
+</html>
