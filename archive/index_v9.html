@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>nsz · fixPadding булево</title>
+    <title>nsz · ключи до импорта</title>
     <!-- Font Awesome 6 (free) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
@@ -921,13 +921,17 @@ sys.modules['enlighten'] = mock
                     } 
                     // Если ключей ещё нет (статус не "✅ Keys loaded"), пытаемся загрузить автоматически
                     else if (keysStatus.textContent !== '✅ Keys loaded') {
-                        await fetchProdKeys();
+                        await fetchProdKeys(); // эта функция сама обновит статус и сохранит ключи
+                        // Важно: fetchProdKeys могла записать ключи в pendingKeys или сразу вызвать writeKeys,
+                        // но мы уже находимся внутри процесса загрузки Pyodide, поэтому нужно убедиться,
+                        // что ключи будут записаны до импорта nsz.
                         if (pendingKeys) {
                             await writeKeys(pendingKeys);
                             pendingKeys = null;
                         }
                     }
                     
+                    // Теперь импортируем nsz, ключи уже должны быть на месте
                     await pyodide.runPythonAsync('import nsz');
                     printOutput('✅ nsz imported.');
                     nszReady = true;
@@ -950,6 +954,7 @@ sys.modules['enlighten'] = mock
 
         // --- Ключи ---
         async function writeKeys(keysContent) {
+            // Эта функция вызывается только когда pyodide уже существует
             await pyodide.runPythonAsync(`
 import os
 keys = '''${keysContent.replace(/'/g, "\\'")}'''
@@ -970,10 +975,12 @@ print("Keys written")
                 const keysText = await resp.text();
                 
                 if (nszReady) {
+                    // Если Pyodide уже загружен, пишем сразу
                     await writeKeys(keysText);
                 } else {
+                    // Иначе сохраняем в ожидающие
                     pendingKeys = keysText;
-                    keysStatus.textContent = '✅ Keys loaded';
+                    keysStatus.textContent = '✅ Keys loaded'; // статус сразу "загружены", хотя физически ещё нет
                     printOutput('✅ Keys fetched, will be applied when Pyodide loads.');
                 }
                 return true;
@@ -990,7 +997,7 @@ print("Keys written")
                 await writeKeys(text);
             } else {
                 pendingKeys = text;
-                keysStatus.textContent = '✅ Keys loaded';
+                keysStatus.textContent = '✅ Keys loaded'; // статус сразу "загружены"
                 printOutput('✅ Keys uploaded, will be applied when Pyodide loads.');
             }
         }
@@ -1097,11 +1104,10 @@ info
                 const path = await preparePathForPython(file);
                 pyodide.globals.set('verify_path', path);
                 try {
-                    const fixPadding = flagFixPadding.checked ? 'True' : 'False';
                     await pyodide.runPythonAsync(`
 import nsz
 from pathlib import Path
-nsz.verify(Path(verify_path), fixPadding=${fixPadding}, raiseVerificationException=True, raisePfs0Exception=False)
+nsz.verify(Path(verify_path), fixPadding=False, raiseVerificationException=True, raisePfs0Exception=False)
 print("Verification passed")
                     `);
                     printOutput(`✅ ${file.name} OK`);
@@ -1138,11 +1144,10 @@ print("Verification passed")
                 pyodide.globals.set('input_path', inputPath);
                 pyodide.globals.set('output_path', outPath);
                 try {
-                    const fixPadding = flagFixPadding.checked ? 'True' : 'False';
                     await pyodide.runPythonAsync(`
 import nsz
 from pathlib import Path
-nsz.decompress(Path(input_path), Path(output_path).parent, fixPadding=${fixPadding})
+nsz.decompress(Path(input_path), Path(output_path).parent, fixPadding=False)
 print("Decompression complete")
                     `);
                     pyodide.FS.stat(outPath);
